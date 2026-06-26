@@ -36,9 +36,20 @@ training:
 
 data:
   dataset: "tinystories"     # first stage dataset
-  data_dir: "./data"
+  data_dir: "./data/tinystories"
   val_split: 0.005
   seed: 42
+
+tokenizer:
+  type: "byte_bpe"           # first backend; registry keeps future algorithms swappable
+  vocab_size: 16384          # must match model.vocab_size
+  reserved_special_tokens: 256
+  artifact_dir: "./artifacts/tokenizer/main_16k"
+  train_files:
+    - "./data/tinystories/train.txt"
+  min_frequency: 2
+  add_prefix_space: false    # Llama/GPT-style byte BPE does not inject a leading space
+  split_digits: true         # isolate digits before BPE so numbers stay compositional
 
 # Inferred at runtime
 device: "auto"               # cuda > mps > cpu

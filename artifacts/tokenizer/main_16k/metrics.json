@@ -1,0 +1,9 @@
+{
+  "bytes_per_token": 4.209618405083173,
+  "chars_per_token": 4.201649175412294,
+  "max_sequence_tokens": 960,
+  "sampled_lines": 1000,
+  "total_bytes": 943426,
+  "total_chars": 941640,
+  "total_tokens": 224112
+}

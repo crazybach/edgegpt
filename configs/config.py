@@ -57,13 +57,48 @@ class DataConfig:
 
 
 @dataclass
+class TokenizerConfig:
+    """Tokenizer hyperparameters.
+
+    The tokenizer is part of the model contract: the embedding table has one
+    row per tokenizer ID. If the tokenizer vocab changes after training starts,
+    old checkpoints no longer line up with token IDs.
+    """
+
+    type: str = "byte_bpe"
+    vocab_size: int = 16384
+    reserved_special_tokens: int = 256
+    artifact_dir: str = "./artifacts/tokenizer/main_16k"
+    train_files: list[str] = field(default_factory=lambda: ["./data/tinystories/train.txt"])
+    min_frequency: int = 2
+    add_prefix_space: bool = False
+    split_digits: bool = True
+
+
+@dataclass
 class Config:
     """Top-level configuration aggregating all sub-configs."""
 
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     device: str = "auto"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate cross-section invariants that would break training later."""
+        if self.model.vocab_size != self.tokenizer.vocab_size:
+            raise ValueError(
+                "model.vocab_size must match tokenizer.vocab_size "
+                f"({self.model.vocab_size} != {self.tokenizer.vocab_size})."
+            )
+        if self.tokenizer.reserved_special_tokens <= 0:
+            raise ValueError("tokenizer.reserved_special_tokens must be positive.")
+        if self.tokenizer.reserved_special_tokens >= self.tokenizer.vocab_size:
+            raise ValueError("tokenizer.reserved_special_tokens must be smaller than tokenizer.vocab_size.")
 
     @property
     def head_dim(self) -> int:
@@ -88,8 +123,13 @@ class Config:
             cfg.training = TrainingConfig(**{k: v for k, v in raw["training"].items() if hasattr(TrainingConfig, k)})
         if "data" in raw:
             cfg.data = DataConfig(**{k: v for k, v in raw["data"].items() if hasattr(DataConfig, k)})
+        if "tokenizer" in raw:
+            cfg.tokenizer = TokenizerConfig(
+                **{k: v for k, v in raw["tokenizer"].items() if hasattr(TokenizerConfig, k)}
+            )
         if "device" in raw:
             cfg.device = raw["device"]
+        cfg.validate()
         return cfg
 
     def resolve_device(self) -> str:

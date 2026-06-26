@@ -1,0 +1,13 @@
+{
+  "add_prefix_space": false,
+  "bos_token": "<|bos|>",
+  "eos_token": "<|eos|>",
+  "model_max_length": null,
+  "pad_token": "<|pad|>",
+  "reserved_special_tokens": 256,
+  "split_digits": true,
+  "tokenizer_class": "EdgeGPTByteBPETokenizer",
+  "type": "byte_bpe",
+  "unk_token": "<|unk|>",
+  "vocab_size": 16384
+}
