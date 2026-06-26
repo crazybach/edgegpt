@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip --version)",
+      "Bash(python -m venv .venv)",
+      "Bash(gh auth *)",
+      "Bash(git init *)",
+      "Bash(gh repo *)"
+    ]
+  }
+}
