@@ -39,6 +39,14 @@ data:
   data_dir: "./data/tinystories"
   val_split: 0.005
   seed: 42
+  source_type: "local_text"  # local_text now; jsonl and hf_streaming adapters can plug in later
+  source_paths: []           # empty = discover train.txt or *.txt under data_dir
+  text_column: "text"        # used when source_type is jsonl
+  cache_dir: "./artifacts/data/tinystories"
+  storage_type: "memmap_bin" # first storage backend; keeps training CPU-light
+  block_size: null           # null = model.max_seq_len
+  shuffle_buffer_size: 10000
+  num_workers: 0
 
 tokenizer:
   type: "byte_bpe"           # first backend; registry keeps future algorithms swappable

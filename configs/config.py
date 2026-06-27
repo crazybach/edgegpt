@@ -51,9 +51,17 @@ class DataConfig:
     """Data pipeline configuration."""
 
     dataset: str = "tinystories"
-    data_dir: str = "./data"
+    data_dir: str = "./data/tinystories"
     val_split: float = 0.005
     seed: int = 42
+    source_type: str = "local_text"
+    source_paths: list[str] = field(default_factory=list)
+    text_column: str = "text"
+    cache_dir: str = "./artifacts/data/tinystories"
+    storage_type: str = "memmap_bin"
+    block_size: Optional[int] = None
+    shuffle_buffer_size: int = 10000
+    num_workers: int = 0
 
 
 @dataclass
@@ -99,6 +107,10 @@ class Config:
             raise ValueError("tokenizer.reserved_special_tokens must be positive.")
         if self.tokenizer.reserved_special_tokens >= self.tokenizer.vocab_size:
             raise ValueError("tokenizer.reserved_special_tokens must be smaller than tokenizer.vocab_size.")
+        if self.data.val_split < 0 or self.data.val_split >= 1:
+            raise ValueError("data.val_split must be in the range [0, 1).")
+        if self.data.block_size is not None and self.data.block_size <= 0:
+            raise ValueError("data.block_size must be positive when set.")
 
     @property
     def head_dim(self) -> int:

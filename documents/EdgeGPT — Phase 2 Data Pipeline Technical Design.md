@@ -1,0 +1,153 @@
+# EdgeGPT Phase 2 - Data Pipeline Technical Design
+
+## Summary
+
+Phase 2 turns raw text documents into fixed-length causal-language-model
+training batches:
+
+```text
+input_ids: LongTensor[B, T]
+targets:   LongTensor[B, T]
+```
+
+The default architecture is offline tokenization plus local binary token shards.
+That means the expensive tokenizer pass runs once, and later training reads
+compact integer blocks from disk. This is the right default for the current
+CPU-friendly laptop setup.
+
+## Research Comparison
+
+| Architecture | Pros | Cons | Decision |
+| --- | --- | --- | --- |
+| On-the-fly streaming tokenization | Flexible, minimal preprocessing | CPU bottleneck during training | Support later as an adapter |
+| Hugging Face streaming datasets | Good for huge remote datasets and dataset interleaving | Network/cache complexity, harder deterministic local tests | Optional future source |
+| nanoGPT-style `.bin` memmap | Simple, fast, proven for small LLMs | Minimal metadata | Default v1 |
+| Megatron-style `.bin` + `.idx` | Scalable, rich indexing | More complexity than needed now | Defer |
+
+References:
+
+- nanoGPT OpenWebText preparation writes token IDs to `train.bin` / `val.bin`: https://github.com/karpathy/nanoGPT/blob/master/data/openwebtext/prepare.py
+- Hugging Face streaming datasets: https://huggingface.co/docs/datasets/stream
+- PyTorch map-style and iterable-style datasets: https://docs.pytorch.org/docs/2.12/data.html
+- Megatron-LM indexed dataset design: https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/datasets/indexed_dataset.py
+
+## Locked Decisions
+
+- Default source backend: local UTF-8 text files.
+- Optional v1 source backend: JSONL with configurable `text_column`.
+- Default storage backend: flat `uint16` `.bin` shards read by NumPy memmap.
+- EOS is appended after every document before concatenation.
+- Pretraining batches use no padding; every sample is a fixed block.
+- Each dataset item reads `T + 1` adjacent tokens, then returns shifted inputs
+  and targets.
+- Leftover tail tokens that cannot form one complete shifted block are dropped
+  by the dataset length calculation.
+- `train` must contain at least `block_size + 1` tokens after tokenization.
+
+## Module Layout
+
+- `data/pipeline/base.py`: swappable interfaces and shared document contracts.
+- `data/pipeline/sources.py`: local text and JSONL document sources.
+- `data/pipeline/shards.py`: memmap shard writer and metadata helpers.
+- `data/pipeline/dataset.py`: memmap block dataset and DataLoader provider.
+- `data/pipeline/prepare.py`: offline tokenization and shard preparation.
+- `scripts/prepare_data.py`: CLI entrypoint.
+- `tests/test_data_pipeline.py`: Phase 2 contract tests.
+
+## Public API
+
+```python
+from data.pipeline import prepare_data, build_train_loader
+
+prepare_data(config)
+loader = build_train_loader(config, split="train")
+batch = next(iter(loader))
+```
+
+Batch format:
+
+```python
+{
+    "input_ids": LongTensor[B, T],
+    "targets": LongTensor[B, T],
+}
+```
+
+Training code should only depend on this public API. Future source or storage
+backends can change internals without changing the batch contract.
+
+## Config Contract
+
+`DataConfig` includes Phase 2 controls:
+
+```yaml
+data:
+  dataset: "tinystories"
+  data_dir: "./data/tinystories"
+  val_split: 0.005
+  seed: 42
+  source_type: "local_text"
+  source_paths: []
+  text_column: "text"
+  cache_dir: "./artifacts/data/tinystories"
+  storage_type: "memmap_bin"
+  block_size: null
+  shuffle_buffer_size: 10000
+  num_workers: 0
+```
+
+`block_size: null` means use `model.max_seq_len`.
+
+## Data Flow
+
+1. Build a `DocumentSource` from config.
+2. Load the Phase 1 tokenizer with `load_tokenizer(config)`.
+3. Deterministically assign documents to train/val with `data.seed`.
+4. Encode each document.
+5. Append `<|eos|>` to mark the document boundary in the flat stream.
+6. Validate token IDs are inside `[0, vocab_size)`.
+7. Write `train.bin`, `val.bin`, and `metadata.json` under `data.cache_dir`.
+8. Read shards with `MemmapTokenBlockDataset`.
+9. Return shifted `input_ids` and `targets`.
+
+## Commenting Requirements
+
+Phase 2 code uses docstrings and focused comments for invariants that later
+phases depend on:
+
+- why EOS is inserted between documents
+- why shards use `uint16`
+- why memmap is the default for laptop-scale training
+- why batches sample `T + 1` tokens
+- why targets are shifted by one
+- why tiny leftover tails are dropped in v1
+
+Comments should explain design constraints, not restate obvious Python syntax.
+
+## Automated Tests
+
+`tests/test_data_pipeline.py` covers:
+
+- shard and metadata creation
+- token ID bounds
+- EOS insertion between documents
+- fixed batch shape `[B, T]`
+- shifted target contract: `targets[:, :-1] == input_ids[:, 1:]`
+- deterministic loader order for the same seed
+- clear failure when train data cannot produce one full block
+
+Run:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\prepare_data.py --config configs/cpu.yaml
+.\.venv\Scripts\python.exe -m pytest tests/test_data_pipeline.py -v
+```
+
+## Acceptance Criteria
+
+- The design doc exists separately from `plan.md`.
+- Phase 2 exposes `prepare_data(config)` and `build_train_loader(config, split)`.
+- Default implementation prepares local text into memmap token shards.
+- Batches return fixed-shape shifted `LongTensor` inputs and targets.
+- The data module stays swappable through explicit source/storage interfaces.
+- All Phase 1 and Phase 2 tests pass.
