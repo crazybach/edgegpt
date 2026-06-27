@@ -110,6 +110,133 @@ data:
 8. Read shards with `MemmapTokenBlockDataset`.
 9. Return shifted `input_ids` and `targets`.
 
+## Concept Notes From Review
+
+### What a shard is
+
+A shard is a saved token-ID array on disk. It is not raw text anymore.
+
+Example:
+
+```text
+doc1: "hello world" -> [101, 205, 99]
+doc2: "I like AI"  -> [42, 88, 300]
+```
+
+After appending EOS between documents:
+
+```python
+eos_id = 16131
+all_tokens = [101, 205, 99, 16131, 42, 88, 300, 16131]
+```
+
+`train.bin` stores those integers as compact `uint16` binary data. Later,
+NumPy memmap treats the file like an array and reads only the window needed for
+one batch, instead of loading the whole shard into RAM.
+
+Shard size depends on total dataset tokens, not block size. Because each token
+is `uint16`, storage is roughly:
+
+```text
+1,000 tokens       -> ~2 KB
+1,000,000 tokens   -> ~2 MB
+100,000,000 tokens -> ~200 MB
+```
+
+### Why `input_ids` and `targets` are shifted
+
+For causal language modeling, `targets` is the answer key for next-token
+prediction:
+
+```python
+block = [101, 205, 99, 16131, 42]
+input_ids = [101, 205, 99, 16131]
+targets   = [205, 99, 16131, 42]
+```
+
+The model sees each prefix and predicts the next token:
+
+| Input context | Target |
+| --- | --- |
+| `101` | `205` |
+| `101, 205` | `99` |
+| `101, 205, 99` | `16131` |
+| `101, 205, 99, 16131` | `42` |
+
+`input_ids` alone is not enough during training because the loss needs an
+answer key. During inference there is no `targets` array; the model predicts the
+next token, appends it to the context, and repeats.
+
+This shifted next-token objective remains the core pretraining pattern for
+modern decoder-only LLMs. Some frontier systems add extra objectives, such as
+multi-token prediction, but standard next-token prediction is still the base.
+
+### Batch and block dimensions
+
+`input_ids` is two-dimensional:
+
+```text
+[B, T]
+```
+
+- `B`: batch size, or how many independent token windows are processed at once.
+- `T`: block size/context length, or how many tokens are in each window.
+
+Examples:
+
+| Shape | Meaning | Tokens per step |
+| --- | --- | ---: |
+| `[1, 512]` | 1 sequence, 512 tokens each | 512 |
+| `[2, 512]` | 2 sequences, 512 tokens each | 1024 |
+| `[8, 512]` | 8 sequences, 512 tokens each | 4096 |
+| `[8, 2048]` | 8 sequences, 2048 tokens each | 16384 |
+
+With `configs/cpu.yaml`, `batch_size = 1` and `max_seq_len = 512`, so batches
+are `[1, 512]`. With `configs/default.yaml`, batches are `[8, 2048]`.
+
+After Phase 3 embeddings, the tensor becomes:
+
+```text
+[B, T] -> [B, T, d_model]
+```
+
+For the CPU config:
+
+```text
+[1, 512] -> [1, 512, 256]
+```
+
+### Why train and validation shards both exist
+
+`train.bin` is data the model learns from. `val.bin` is held-out data used to
+check whether training generalizes:
+
+| Step | Train loss | Val loss | Meaning |
+| ---: | ---: | ---: | --- |
+| 1,000 | 5.0 | 5.1 | learning normally |
+| 10,000 | 3.0 | 3.2 | improving and generalizing |
+| 50,000 | 1.0 | 4.5 | likely overfitting |
+
+For tiny smoke tests, train-only data can be enough. For real training, even a
+small validation split is important because train loss alone can hide
+memorization.
+
+### Parallelism decision
+
+Phase 2 is single-process by default. That is intentional for the current
+laptop-scale CPU setup:
+
+```text
+read text -> tokenize -> append EOS -> write token IDs
+```
+
+Large LLM pipelines usually parallelize or distribute preprocessing because
+they process enormous corpora and must keep many training workers fed. EdgeGPT
+does not need that complexity yet. The interface boundaries (`DocumentSource`,
+`TokenShardWriter`, `TokenBlockDataset`, `BatchProvider`) are where future
+parallel or distributed implementations can plug in without changing the
+training API.
+
 ## Commenting Requirements
 
 Phase 2 code uses docstrings and focused comments for invariants that later
