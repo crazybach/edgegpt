@@ -131,6 +131,16 @@ def test_save_load_parity(tiny_tokenizer):
     assert reloaded.decode(after) == text
 
 
+def test_encode_texts_returns_unpadded_document_token_lists(tiny_tokenizer):
+    tokenizer, _ = tiny_tokenizer
+    texts = ["short", "a much longer sentence"]
+
+    encoded = tokenizer.encode_texts(texts)
+
+    assert encoded == [tokenizer.encode(text).tolist() for text in texts]
+    assert len(encoded[0]) != len(encoded[1])
+
+
 def test_encoded_ids_stay_in_vocab_bounds(tiny_tokenizer):
     tokenizer, config = tiny_tokenizer
     ids = tokenizer.encode("Bounds check: 你好 🙂 123", add_bos=True, add_eos=True)

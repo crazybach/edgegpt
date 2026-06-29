@@ -15,6 +15,7 @@ import torch
 from configs.config import Config, DataConfig, ModelConfig, TokenizerConfig, TrainingConfig
 from data.pipeline import build_train_loader, prepare_data
 from data.pipeline.shards import TOKEN_DTYPE, split_path
+from data.pipeline.sources import LocalTextDocumentSource
 from data.tokenizer.registry import build_tokenizer
 
 
@@ -85,6 +86,20 @@ def test_prepare_data_writes_shards_and_metadata(tmp_path: Path):
     assert train_tokens.size == metadata["token_counts"]["train"]
     assert int(train_tokens.min()) >= 0
     assert int(train_tokens.max()) < config.model.vocab_size
+
+
+def test_local_text_source_streams_one_document_per_non_empty_line(tmp_path: Path):
+    source_path = tmp_path / "stories.txt"
+    source_path.write_text("first story\n\nsecond story\nthird story\n", encoding="utf-8")
+
+    docs = list(LocalTextDocumentSource([source_path]).documents())
+
+    assert [doc.text for doc in docs] == ["first story", "second story", "third story"]
+    assert [doc.doc_id for doc in docs] == [
+        f"{source_path}:1",
+        f"{source_path}:3",
+        f"{source_path}:4",
+    ]
 
 
 def test_eos_is_inserted_between_documents(tmp_path: Path):

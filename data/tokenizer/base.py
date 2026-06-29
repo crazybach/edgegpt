@@ -48,6 +48,10 @@ class TokenizerBackend(ABC):
         """Encode a batch, optionally right-padding to a rectangular tensor."""
 
     @abstractmethod
+    def encode_texts(self, texts: list[str]) -> list[list[int]]:
+        """Encode many texts without padding for offline data preparation."""
+
+    @abstractmethod
     def token_to_id(self, token: str) -> int:
         """Return the integer ID for one token string."""
 

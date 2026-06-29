@@ -236,6 +236,18 @@ class ByteBPETokenizerBackend(TokenizerBackend):
 
         return {"input_ids": torch.stack(rows), "attention_mask": torch.stack(masks)}
 
+    def encode_texts(self, texts: list[str]) -> list[list[int]]:
+        """Encode many documents without padding.
+
+        Offline data preparation needs variable-length token lists, not padded
+        tensors. HuggingFace tokenizers executes this batch path in native Rust,
+        avoiding Python-call overhead for every single document line.
+        """
+
+        tokenizer = self._require_tokenizer()
+        encodings = tokenizer.encode_batch(texts, add_special_tokens=False)
+        return [[int(token_id) for token_id in encoding.ids] for encoding in encodings]
+
     def token_to_id(self, token: str) -> int:
         tokenizer = self._require_tokenizer()
         token_id = tokenizer.token_to_id(token)

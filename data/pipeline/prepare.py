@@ -8,13 +8,16 @@ being throttled by tokenizer CPU work.
 from __future__ import annotations
 
 import json
-import random
+import hashlib
 from pathlib import Path
 
 from configs.config import Config
 from data.pipeline.sources import build_document_source
-from data.pipeline.shards import MemmapTokenShardWriter
+from data.pipeline.shards import StreamingTokenShardWriter
 from data.tokenizer import load_tokenizer
+
+
+PREPARE_ENCODE_BATCH_SIZE = 1024
 
 
 def resolve_block_size(config: Config) -> int:
@@ -23,21 +26,18 @@ def resolve_block_size(config: Config) -> int:
     return config.data.block_size or config.model.max_seq_len
 
 
-def _split_documents(document_count: int, val_split: float, seed: int) -> dict[int, str]:
-    """Assign document indexes to train/val deterministically."""
+def _split_for_document(doc_id: str, val_split: float, seed: int) -> str:
+    """Assign one document to train/val without knowing corpus size.
 
-    if document_count <= 0:
-        raise ValueError("At least one document is required to prepare data.")
-    indexes = list(range(document_count))
-    rng = random.Random(seed)
-    rng.shuffle(indexes)
+    A stable hash gives deterministic splits while preserving streaming: we do
+    not need to list all documents before deciding where each one goes.
+    """
 
-    val_count = int(round(document_count * val_split))
-    if val_split > 0 and document_count > 1:
-        val_count = max(1, val_count)
-    val_count = min(val_count, document_count - 1) if document_count > 1 else 0
-    val_indexes = set(indexes[:val_count])
-    return {index: ("val" if index in val_indexes else "train") for index in range(document_count)}
+    if val_split <= 0:
+        return "train"
+    digest = hashlib.blake2b(f"{seed}:{doc_id}".encode("utf-8"), digest_size=8).digest()
+    bucket = int.from_bytes(digest, byteorder="big") / float(1 << 64)
+    return "val" if bucket < val_split else "train"
 
 
 def prepare_data(config: Config) -> dict[str, object]:
@@ -47,40 +47,43 @@ def prepare_data(config: Config) -> dict[str, object]:
         raise ValueError(f"Unsupported data.storage_type: {config.data.storage_type}")
 
     source = build_document_source(config.data)
-    documents = list(source.documents())
-    split_by_index = _split_documents(len(documents), config.data.val_split, config.data.seed)
     tokenizer = load_tokenizer(config)
     eos_id = tokenizer.token_to_id("<|eos|>")
     block_size = resolve_block_size(config)
 
-    split_tokens: dict[str, list[int]] = {"train": [], "val": []}
-    doc_counts: dict[str, int] = {"train": 0, "val": 0}
-    for index, document in enumerate(documents):
-        split = split_by_index[index]
-        ids = tokenizer.encode(document.text).tolist()
-        # EOS marks document boundaries in the flat stream. Without it, the
-        # model would learn fake transitions from the end of one document into
-        # the beginning of the next.
-        split_tokens[split].extend(int(token_id) for token_id in ids)
-        split_tokens[split].append(eos_id)
-        doc_counts[split] += 1
+    document_count = 0
+    with StreamingTokenShardWriter(config, eos_id=eos_id, block_size=block_size) as writer:
+        pending_splits: list[str] = []
+        pending_texts: list[str] = []
 
-    for split, tokens in split_tokens.items():
-        if not tokens:
-            continue
-        if max(tokens) >= config.model.vocab_size or min(tokens) < 0:
-            raise ValueError(f"{split} split contains token IDs outside the configured vocab.")
+        def flush_pending() -> None:
+            if not pending_texts:
+                return
+            for split, ids in zip(pending_splits, tokenizer.encode_texts(pending_texts), strict=True):
+                writer.append(split, ids)
+            pending_splits.clear()
+            pending_texts.clear()
 
-    # Tiny validation splits may not produce a full block; that is acceptable
-    # for preparation, but train must be usable immediately by Phase 3+ tests.
-    if len(split_tokens["train"]) < block_size + 1:
+        for document in source.documents():
+            split = _split_for_document(document.doc_id, config.data.val_split, config.data.seed)
+            pending_splits.append(split)
+            pending_texts.append(document.text)
+            document_count += 1
+            if len(pending_texts) >= PREPARE_ENCODE_BATCH_SIZE:
+                flush_pending()
+        flush_pending()
+        metadata = writer.metadata()
+
+    if document_count <= 0:
+        raise ValueError("At least one document is required to prepare data.")
+
+    # Tiny validation splits may be empty; train must be immediately usable by
+    # Phase 3+ tests and the future training loop.
+    train_tokens = int(metadata["token_counts"]["train"])
+    if train_tokens < block_size + 1:
         raise ValueError(
-            f"Train split has {len(split_tokens['train'])} tokens, but at least {block_size + 1} "
+            f"Train split has {train_tokens} tokens, but at least {block_size + 1} "
             "are required for one shifted training block."
         )
-
-    writer = MemmapTokenShardWriter(config, eos_id=eos_id, block_size=block_size)
-    metadata = writer.write(split_tokens)
-    metadata["document_counts"] = doc_counts
     Path(config.data.cache_dir, "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return metadata

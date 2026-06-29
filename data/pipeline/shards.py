@@ -72,6 +72,74 @@ class MemmapTokenShardWriter(TokenShardWriter):
         return metadata
 
 
+class StreamingTokenShardWriter:
+    """Append tokenized documents directly to split shards.
+
+    This writer keeps memory bounded by one encoded document at a time. It is
+    the production-lite path used by `prepare_data`: tokenize a document, append
+    EOS, write `uint16` bytes immediately, and keep only counters in memory.
+    """
+
+    def __init__(self, config: Config, eos_id: int, block_size: int):
+        self.config = config
+        self.eos_id = eos_id
+        self.block_size = block_size
+        self.cache_dir = Path(config.data.cache_dir)
+        self.token_counts: dict[str, int] = {"train": 0, "val": 0}
+        self.document_counts: dict[str, int] = {"train": 0, "val": 0}
+
+        if self.config.model.vocab_size > np.iinfo(TOKEN_DTYPE).max + 1:
+            raise ValueError("uint16 shards only support vocab_size <= 65536.")
+
+    def __enter__(self) -> "StreamingTokenShardWriter":
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._handles = {
+            split: split_path(self.cache_dir, split).open("wb")
+            for split in ("train", "val")
+        }
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        for handle in self._handles.values():
+            handle.close()
+
+    def append(self, split: str, token_ids: list[int]) -> None:
+        """Write one tokenized document plus EOS to its split shard."""
+
+        if split not in self._handles:
+            raise ValueError(f"Unsupported split: {split}")
+        if token_ids:
+            max_id = max(token_ids)
+            min_id = min(token_ids)
+            if max_id >= self.config.model.vocab_size or min_id < 0:
+                raise ValueError(f"{split} split contains token IDs outside the configured vocab.")
+
+        # EOS boundaries prevent the packed stream from inventing transitions
+        # between unrelated source documents.
+        array = np.asarray([*token_ids, self.eos_id], dtype=TOKEN_DTYPE)
+        array.tofile(self._handles[split])
+        self.token_counts[split] += int(array.size)
+        self.document_counts[split] += 1
+
+    def metadata(self) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "dataset": self.config.data.dataset,
+            "source_type": self.config.data.source_type,
+            "storage_type": self.config.data.storage_type,
+            "dtype": "uint16",
+            "vocab_size": self.config.model.vocab_size,
+            "tokenizer_artifact_dir": self.config.tokenizer.artifact_dir,
+            "eos_id": self.eos_id,
+            "block_size": self.block_size,
+            "seed": self.config.data.seed,
+            "val_split": self.config.data.val_split,
+            "token_counts": dict(self.token_counts),
+            "document_counts": dict(self.document_counts),
+        }
+        metadata_path(self.cache_dir).write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        return metadata
+
+
 def load_metadata(cache_dir: str | Path) -> dict[str, Any]:
     """Load shard metadata and fail clearly if preparation has not run."""
 

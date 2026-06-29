@@ -16,7 +16,13 @@ from data.pipeline.base import Document, DocumentSource, resolve_source_paths
 
 
 class LocalTextDocumentSource(DocumentSource):
-    """Read one whole UTF-8 text file as one document per path."""
+    """Stream local UTF-8 text files as one document per non-empty line.
+
+    TinyStories-style text files commonly store one story per line. Reading the
+    whole file into one string made Phase 2 memory scale with the full corpus
+    size, so the source now streams small document records. Later source
+    backends can add paragraph-aware parsing without changing the pipeline API.
+    """
 
     def __init__(self, paths: list[Path]):
         self.paths = paths
@@ -25,7 +31,12 @@ class LocalTextDocumentSource(DocumentSource):
         for path in self.paths:
             if not path.exists():
                 raise FileNotFoundError(f"Data source does not exist: {path}")
-            yield Document(doc_id=str(path), text=path.read_text(encoding="utf-8"))
+            with path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    text = line.rstrip("\r\n")
+                    if not text.strip():
+                        continue
+                    yield Document(doc_id=f"{path}:{line_number}", text=text)
 
 
 class JsonlDocumentSource(DocumentSource):
@@ -63,3 +74,4 @@ def build_document_source(config: DataConfig) -> DocumentSource:
     if config.source_type == "jsonl":
         return JsonlDocumentSource(paths, config.text_column)
     raise ValueError(f"Unsupported data.source_type: {config.source_type}")
+
