@@ -13,6 +13,7 @@ def _config(
     *,
     d_model: int = 32,
     n_heads: int = 4,
+    n_kv_heads: int = 2,
     max_seq_len: int = 16,
     rope_theta: float = 10000.0,
 ) -> Config:
@@ -21,6 +22,7 @@ def _config(
             vocab_size=64,
             d_model=d_model,
             n_heads=n_heads,
+            n_kv_heads=n_kv_heads,
             max_seq_len=max_seq_len,
             rope_theta=rope_theta,
         ),
@@ -128,7 +130,7 @@ def test_cache_extends_for_position_offset():
 
 def test_odd_head_dim_fails_clearly():
     with pytest.raises(ValueError, match="even head_dim"):
-        RotaryEmbedding(_config(d_model=30, n_heads=2))
+        RotaryEmbedding(_config(d_model=30, n_heads=2, n_kv_heads=1))
 
 
 def test_real_cpu_config_compatibility():

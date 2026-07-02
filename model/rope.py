@@ -44,10 +44,13 @@ def apply_rotary_pos_emb(
         position_offset: starting position when full caches are supplied.
     """
 
-    if q.shape != k.shape:
-        raise ValueError(f"q and k must have the same shape, got {q.shape} and {k.shape}.")
-    if q.ndim != 4:
-        raise ValueError(f"RoPE expects q/k shape [B, H, T, D], got {q.shape}.")
+    if q.ndim != 4 or k.ndim != 4:
+        raise ValueError(f"RoPE expects q/k shape [B, H, T, D], got {q.shape} and {k.shape}.")
+    if q.shape[0] != k.shape[0] or q.shape[-2:] != k.shape[-2:]:
+        raise ValueError(
+            "q and k must share batch, sequence length, and head_dim; "
+            f"got {q.shape} and {k.shape}."
+        )
 
     seq_len = q.shape[-2]
     head_dim = q.shape[-1]

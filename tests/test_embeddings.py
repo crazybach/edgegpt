@@ -20,6 +20,8 @@ def _config(
         model=ModelConfig(
             vocab_size=vocab_size,
             d_model=d_model,
+            n_heads=4,
+            n_kv_heads=2,
             embedding_scale=embedding_scale,
             tie_embeddings=tie_embeddings,
         ),

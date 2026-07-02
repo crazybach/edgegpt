@@ -11,7 +11,7 @@ from model import RMSNorm
 
 def _config(*, d_model: int = 8, norm_eps: float = 1e-5) -> Config:
     return Config(
-        model=ModelConfig(vocab_size=64, d_model=d_model, norm_eps=norm_eps),
+        model=ModelConfig(vocab_size=64, d_model=d_model, n_heads=4, n_kv_heads=2, norm_eps=norm_eps),
         tokenizer=TokenizerConfig(vocab_size=64, reserved_special_tokens=8),
         device="cpu",
     )
