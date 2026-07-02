@@ -111,6 +111,8 @@ class Config:
             raise ValueError("data.val_split must be in the range [0, 1).")
         if self.data.block_size is not None and self.data.block_size <= 0:
             raise ValueError("data.block_size must be positive when set.")
+        if self.model.d_ff <= 0:
+            raise ValueError("model.d_ff must be positive.")
         if self.model.n_heads <= 0:
             raise ValueError("model.n_heads must be positive.")
         if self.model.d_model % self.model.n_heads != 0:

@@ -2,6 +2,7 @@
 
 from model.attention import CausalSelfAttention, manual_scaled_dot_product_attention, repeat_kv
 from model.embeddings import OutputProjection, TokenEmbedding, build_embedding_layers
+from model.mlp import SwiGLUMLP
 from model.norm import RMSNorm
 from model.rope import RotaryEmbedding, apply_rotary_pos_emb, rotate_half
 
@@ -10,6 +11,7 @@ __all__ = [
     "OutputProjection",
     "RMSNorm",
     "RotaryEmbedding",
+    "SwiGLUMLP",
     "TokenEmbedding",
     "apply_rotary_pos_emb",
     "build_embedding_layers",
