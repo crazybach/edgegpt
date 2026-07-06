@@ -1,4 +1,10 @@
 # EdgeGPT — Laptop-scale LLM training
+#
+# PyTorch install note:
+#   Default pip install torch pulls CUDA-enabled wheels on Windows/Linux.
+#   For CPU-only, use: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+#   Verified with: torch 2.5.1+cu121 on RTX 4060 (8 GB VRAM), CUDA 12.1
+
 # Core
 torch>=2.1.0
 torchvision

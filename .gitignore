@@ -24,6 +24,10 @@ checkpoints/
 # Data
 data/raw/
 data/processed/
+data/tinystories/
+
+# Build artifacts
+artifacts/
 *.bin
 *.idx
 
