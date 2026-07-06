@@ -21,6 +21,7 @@ class ModelConfig:
     max_seq_len: int = 2048
     rope_theta: float = 10000.0
     norm_eps: float = 1e-5
+    initializer_range: float = 0.02  # GPT-2/Llama weight init std
     embedding_scale: Optional[float] = None  # None = no scaling (Llama-style)
     tie_embeddings: bool = True
     dropout: float = 0.0
@@ -41,6 +42,7 @@ class TrainingConfig:
     beta2: float = 0.95
     grad_clip: float = 1.0
     dtype: str = "bf16"
+    chunked_loss: bool = False  # tile CE over seq dim to save memory on CPU
     eval_every: int = 500
     save_every: int = 2000
     log_every: int = 10

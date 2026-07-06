@@ -12,6 +12,7 @@ model:
   max_seq_len: 2048          # context length
   rope_theta: 10000.0        # RoPE base frequency
   norm_eps: 1e-5             # RMSNorm epsilon
+  initializer_range: 0.02    # GPT-2/Llama-style weight init std
   embedding_scale: null      # null = no scaling (Llama-style); set to sqrt(d_model) for Gemma-style
   tie_embeddings: true       # weight-tying input embeddings and output projection
 

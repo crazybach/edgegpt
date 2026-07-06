@@ -12,6 +12,7 @@ model:
   max_seq_len: 512
   rope_theta: 10000.0
   norm_eps: 1e-5
+  initializer_range: 0.02
   embedding_scale: null
   tie_embeddings: true
   dropout: 0.0

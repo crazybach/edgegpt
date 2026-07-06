@@ -4,11 +4,13 @@ from model.attention import CausalSelfAttention, manual_scaled_dot_product_atten
 from model.block import TransformerBlock
 from model.embeddings import OutputProjection, TokenEmbedding, build_embedding_layers
 from model.mlp import SwiGLUMLP
+from model.model import EdgeGPT
 from model.norm import RMSNorm
 from model.rope import RotaryEmbedding, apply_rotary_pos_emb, rotate_half
 
 __all__ = [
     "CausalSelfAttention",
+    "EdgeGPT",
     "OutputProjection",
     "RMSNorm",
     "RotaryEmbedding",

@@ -53,7 +53,11 @@ class OutputProjection(nn.Module):
         super().__init__()
         self.config = config
         self.tie_embeddings = config.model.tie_embeddings
-        self.token_embedding = token_embedding
+        # Use object.__setattr__ to avoid registering token_embedding as a
+        # PyTorch submodule — it is already a direct child of EdgeGPT and
+        # registering it a second time would cause nn.Module.apply() to
+        # visit (and re-initialise) its parameters twice.
+        object.__setattr__(self, "token_embedding", token_embedding)
 
         if self.tie_embeddings:
             if token_embedding is None:
