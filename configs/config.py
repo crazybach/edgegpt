@@ -46,6 +46,10 @@ class TrainingConfig:
     eval_every: int = 500
     save_every: int = 2000
     log_every: int = 10
+    output_dir: str = "./artifacts/runs"
+    eval_iters: int = 20
+    checkpoint_keep_last: int = 3
+    always_save_checkpoint: bool = True
 
 
 @dataclass
@@ -125,6 +129,30 @@ class Config:
             raise ValueError("model.n_kv_heads cannot exceed model.n_heads.")
         if self.model.n_heads % self.model.n_kv_heads != 0:
             raise ValueError("model.n_heads must be divisible by model.n_kv_heads.")
+        if self.training.batch_size <= 0:
+            raise ValueError("training.batch_size must be positive.")
+        if self.training.gradient_accumulation_steps <= 0:
+            raise ValueError("training.gradient_accumulation_steps must be positive.")
+        if self.training.learning_rate <= 0:
+            raise ValueError("training.learning_rate must be positive.")
+        if self.training.min_lr < 0:
+            raise ValueError("training.min_lr must be non-negative.")
+        if self.training.warmup_steps < 0:
+            raise ValueError("training.warmup_steps must be non-negative.")
+        if self.training.max_steps <= 0:
+            raise ValueError("training.max_steps must be positive.")
+        if self.training.eval_every <= 0:
+            raise ValueError("training.eval_every must be positive.")
+        if self.training.save_every <= 0:
+            raise ValueError("training.save_every must be positive.")
+        if self.training.log_every <= 0:
+            raise ValueError("training.log_every must be positive.")
+        if self.training.eval_iters <= 0:
+            raise ValueError("training.eval_iters must be positive.")
+        if self.training.checkpoint_keep_last <= 0:
+            raise ValueError("training.checkpoint_keep_last must be positive.")
+        if self.training.dtype not in {"fp32", "bf16", "fp16"}:
+            raise ValueError("training.dtype must be one of: fp32, bf16, fp16.")
 
     @property
     def head_dim(self) -> int:
@@ -176,3 +204,5 @@ def load_config(path: str | Path = "configs/default.yaml") -> Config:
     if os.path.exists(path):
         return Config.from_yaml(path)
     return Config()
+
+

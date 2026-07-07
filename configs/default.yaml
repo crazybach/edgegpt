@@ -34,6 +34,10 @@ training:
   eval_every: 500
   save_every: 2000
   log_every: 10
+  output_dir: "./artifacts/runs"
+  eval_iters: 20
+  checkpoint_keep_last: 3
+  always_save_checkpoint: true
 
 data:
   dataset: "tinystories"     # first stage dataset
@@ -62,3 +66,4 @@ tokenizer:
 
 # Inferred at runtime
 device: "auto"               # cuda > mps > cpu
+
