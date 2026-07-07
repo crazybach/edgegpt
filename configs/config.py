@@ -50,6 +50,7 @@ class TrainingConfig:
     eval_iters: int = 20
     checkpoint_keep_last: int = 3
     always_save_checkpoint: bool = True
+    checkpoint_enabled: bool = True  # False = no checkpoint files at all
 
 
 @dataclass

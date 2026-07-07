@@ -1,8 +1,20 @@
-"""Single-node Phase 10 trainer for EdgeGPT."""
+"""Single-node Phase 10 trainer for EdgeGPT.
+
+Checkpoint behaviour is controlled by ``training.checkpoint_enabled``:
+
+* ``True`` (default) — save numbered checkpoints at ``save_every``,
+  on new best validation loss, and on graceful interrupt (Ctrl+C).
+  Resume picks up the data-loader shuffle position so no tokens are
+  re-consumed.
+* ``False`` — no checkpoint files are written.  Training still logs
+  to JSONL, but runs cannot be resumed.
+"""
 
 from __future__ import annotations
 
+import json
 import math
+import signal
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -14,7 +26,13 @@ import torch
 from configs.config import Config
 from data.pipeline import build_train_loader
 from model import EdgeGPT
-from train.checkpoint import load_checkpoint, save_checkpoint
+from train.checkpoint import (
+    capture_dataloader_state,
+    load_checkpoint,
+    restore_dataloader_state,
+    save_checkpoint,
+    write_checkpoint_report,
+)
 from train.logging import JsonlEventLogger
 from train.optim import build_adamw_optimizer
 from train.schedule import get_warmup_cosine_lr
@@ -28,6 +46,7 @@ class TrainingResult:
     global_step: int
     best_val_loss: float | None
     last_train_loss: float | None
+    tokens_consumed: int
 
 
 class Trainer:
@@ -53,10 +72,16 @@ class Trainer:
         self.global_step = 0
         self.best_val_loss: float | None = None
         self.last_train_loss: float | None = None
+        self.tokens_consumed: int = 0
+        self.dataset_total_tokens: int | None = None
+        self._run_start_s: float | None = None
         self._active_max_steps = config.training.max_steps
         self._train_iter: Iterable[dict[str, torch.Tensor]] | None = None
         self._train_loader = None
         self._val_loader = None
+        self._interrupted = False
+
+    # ── helpers ───────────────────────────────────────────────────────
 
     def _default_run_dir(self, run_id: str | None) -> Path:
         suffix = run_id or time.strftime("%Y%m%d_%H%M%S")
@@ -107,11 +132,22 @@ class Trainer:
         for group in self.optimizer.param_groups:
             group["lr"] = lr
 
+    def _ensure_train_loader(self) -> None:
+        """Lazily build the train DataLoader and discover dataset size."""
+        if self._train_loader is not None:
+            return
+        self._train_loader = build_train_loader(self.config, "train")
+        self._train_iter = iter(self._train_loader)
+        # Cache total dataset size for progress reporting.
+        try:
+            dataset = self._train_loader.dataset
+            self.dataset_total_tokens = len(dataset) * self.config.data.block_size
+        except Exception:
+            pass
+
     def _next_train_batch(self) -> dict[str, torch.Tensor]:
-        if self._train_loader is None:
-            self._train_loader = build_train_loader(self.config, "train")
-            self._train_iter = iter(self._train_loader)
-        assert self._train_iter is not None
+        self._ensure_train_loader()
+        assert self._train_iter is not None and self._train_loader is not None
         try:
             return next(self._train_iter)
         except StopIteration:
@@ -137,12 +173,20 @@ class Trainer:
             "max_steps": self._active_max_steps,
             "progress": progress,
             "tokens_seen": tokens_seen,
+            "tokens_consumed": self.tokens_consumed,
             "batch_size": batch_size,
             "seq_len": seq_len,
             "device": str(self.device),
             "dtype": self.config.training.dtype,
             "memory": self._memory_report(),
         }
+
+    def _elapsed(self) -> float:
+        if self._run_start_s is None:
+            return 0.0
+        return time.perf_counter() - self._run_start_s
+
+    # ── training entry-point ───────────────────────────────────────────
 
     def train(
         self,
@@ -151,12 +195,20 @@ class Trainer:
         resume: str | Path | None = None,
         eval_only: bool = False,
     ) -> TrainingResult:
-        """Run training until ``max_steps`` or ``config.training.max_steps``."""
+        """Run training until ``max_steps`` or ``config.training.max_steps``.
+
+        When *resume* is provided the model, optimizer, and RNG state are
+        restored from the checkpoint file and the data-loader shuffle
+        position is re-seeded so training continues without re-consuming
+        previously seen tokens.
+        """
 
         target_steps = max_steps if max_steps is not None else self.config.training.max_steps
         if target_steps <= 0:
             raise ValueError("max_steps must be positive.")
         self._active_max_steps = target_steps
+        self._run_start_s = time.perf_counter()
+
         if resume is not None:
             state = load_checkpoint(
                 path=resume,
@@ -167,18 +219,59 @@ class Trainer:
             )
             self.global_step = state.global_step
             self.best_val_loss = state.best_val_loss
+            self.tokens_consumed = state.tokens_consumed
+            # Rebuild the data loader and re-seed its sampler so we
+            # continue from where the shuffle left off.
+            self._train_loader = build_train_loader(self.config, "train")
+            restorable = state.tokens_consumed > 0
+            if restorable:
+                restore_dataloader_state(self._train_loader, state.dataloader_state)
+            self._train_iter = iter(self._train_loader)
+            # Discover dataset size even on resume.
+            try:
+                self.dataset_total_tokens = len(self._train_loader.dataset) * self.config.data.block_size
+            except Exception:
+                pass
+            checkpoint_name = Path(resume).name
+            self.logger.log(
+                "resume",
+                checkpoint=checkpoint_name,
+                best_val_loss=self.best_val_loss,
+                **self._log_common(global_step=self.global_step),
+            )
+            print(
+                f"Loaded checkpoint: step={self.global_step} "
+                f"tokens_consumed={self.tokens_consumed} "
+                f"best_val_loss={self.best_val_loss}"
+            )
 
+        self._install_sigint_handler()
         self.logger.log("run_start", **self._log_common(global_step=self.global_step))
         try:
             if eval_only:
                 self.evaluate()
                 self.logger.log("run_end", **self._log_common(global_step=self.global_step))
-                return TrainingResult(self.run_dir, self.global_step, self.best_val_loss, self.last_train_loss)
+                return TrainingResult(
+                    self.run_dir, self.global_step, self.best_val_loss,
+                    self.last_train_loss, self.tokens_consumed,
+                )
 
             while self.global_step < target_steps:
+                if self._interrupted:
+                    self._save_checkpoint(kind="interrupt")
+                    print(
+                        f"\nInterrupted at step {self.global_step}. "
+                        f"Checkpoint saved. Resume with: --resume {self.run_dir / 'latest.pt'}"
+                    )
+                    break
                 self._train_one_optimizer_step(target_steps=target_steps)
-            self.logger.log("run_end", **self._log_common(global_step=self.global_step))
-            return TrainingResult(self.run_dir, self.global_step, self.best_val_loss, self.last_train_loss)
+
+            if not self._interrupted:
+                self.logger.log("run_end", **self._log_common(global_step=self.global_step))
+            return TrainingResult(
+                self.run_dir, self.global_step, self.best_val_loss,
+                self.last_train_loss, self.tokens_consumed,
+            )
         except Exception as exc:
             self.logger.log(
                 "error",
@@ -189,6 +282,21 @@ class Trainer:
                 message=str(exc),
             )
             raise
+
+    # ── signal handling ────────────────────────────────────────────────
+
+    def _install_sigint_handler(self) -> None:
+        """Catch Ctrl+C once so checkpoints can save a clean snapshot."""
+
+        def _handler(signum: int, frame: Any) -> None:  # noqa: ARG001
+            self._interrupted = True
+
+        try:
+            signal.signal(signal.SIGINT, _handler)
+        except ValueError:
+            pass  # not in main thread — skip handler
+
+    # ── single optimizer step ──────────────────────────────────────────
 
     def _train_one_optimizer_step(self, *, target_steps: int) -> None:
         """Run one accumulated optimizer step and emit structured events."""
@@ -209,6 +317,7 @@ class Trainer:
             input_ids = batch["input_ids"]
             targets = batch["targets"]
             last_batch_size, last_seq_len = int(input_ids.shape[0]), int(input_ids.shape[1])
+            self.tokens_consumed += int(input_ids.numel())
 
             with self._autocast_context():
                 _, loss = self.model(input_ids, targets)
@@ -257,10 +366,63 @@ class Trainer:
 
         if self.global_step % self.config.training.eval_every == 0 or self.global_step == target_steps:
             self.evaluate()
+        self._maybe_save_checkpoint(target_steps=target_steps)
+
+    # ── checkpoint save gating ─────────────────────────────────────────
+
+    def _maybe_save_checkpoint(self, *, target_steps: int) -> None:
+        """Save a checkpoint if the policy allows it and checkpointing is on."""
+
+        if not self.config.training.checkpoint_enabled:
+            return
+
         should_save_interval = self.global_step % self.config.training.save_every == 0
-        should_save_final = self.config.training.always_save_checkpoint and self.global_step == target_steps
+        should_save_final = (
+            self.config.training.always_save_checkpoint and self.global_step == target_steps
+        )
         if should_save_interval or should_save_final:
-            self._save_checkpoint()
+            self._save_checkpoint(kind="interval")
+
+    def _save_checkpoint(self, *, kind: str = "interval") -> Path | None:
+        """Save a checkpoint, its JSON report, and log the event."""
+
+        if not self.config.training.checkpoint_enabled:
+            return None
+
+        dl_state = capture_dataloader_state(self._train_loader)
+        step_path = save_checkpoint(
+            run_dir=self.run_dir,
+            config=self.config,
+            model=self.model,
+            optimizer=self.optimizer,
+            scaler=self.scaler,
+            global_step=self.global_step,
+            best_val_loss=self.best_val_loss,
+            tokens_consumed=self.tokens_consumed,
+            dataloader_state=dl_state,
+        )
+
+        write_checkpoint_report(
+            checkpoint_path=step_path,
+            global_step=self.global_step,
+            max_steps=self._active_max_steps,
+            tokens_consumed=self.tokens_consumed,
+            total_dataset_tokens=self.dataset_total_tokens,
+            train_loss=self.last_train_loss,
+            val_loss=self.best_val_loss,
+            lr=self._current_lr(self.global_step),
+            elapsed_s=self._elapsed(),
+        )
+
+        self.logger.log(
+            "checkpoint",
+            kind=kind,
+            checkpoint_path=str(step_path),
+            **self._log_common(global_step=self.global_step),
+        )
+        return step_path
+
+    # ── evaluation ─────────────────────────────────────────────────────
 
     def evaluate(self) -> dict[str, float] | None:
         """Evaluate validation loss when a val shard is available."""
@@ -295,7 +457,8 @@ class Trainer:
         val_loss = sum(losses) / len(losses)
         if self.best_val_loss is None or val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
-            self._save_checkpoint()
+            if self.config.training.checkpoint_enabled:
+                self._save_checkpoint(kind="best")
         self.logger.log(
             "eval",
             split="val",
@@ -305,18 +468,7 @@ class Trainer:
         )
         return {"loss": val_loss, "perplexity": self._safe_perplexity(val_loss)}
 
-    def _save_checkpoint(self) -> Path:
-        path = save_checkpoint(
-            run_dir=self.run_dir,
-            config=self.config,
-            model=self.model,
-            optimizer=self.optimizer,
-            scaler=self.scaler,
-            global_step=self.global_step,
-            best_val_loss=self.best_val_loss,
-        )
-        self.logger.log("checkpoint", checkpoint_path=str(path), **self._log_common(global_step=self.global_step))
-        return path
+    # ── utilities ──────────────────────────────────────────────────────
 
     @staticmethod
     def _safe_perplexity(loss: float | None) -> float | None:

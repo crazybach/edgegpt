@@ -38,6 +38,7 @@ training:
   eval_iters: 20
   checkpoint_keep_last: 3
   always_save_checkpoint: true
+  checkpoint_enabled: true
 
 data:
   dataset: "tinystories"     # first stage dataset
