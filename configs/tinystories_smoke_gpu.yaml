@@ -1,0 +1,66 @@
+# TinyStories smoke training config.
+# Purpose: fast GPU checkpoint validation, not model quality.
+
+model:
+  vocab_size: 16384
+  d_model: 128
+  n_layers: 2
+  n_heads: 4
+  n_kv_heads: 2
+  d_ff: 352
+  max_seq_len: 128
+  rope_theta: 10000.0
+  norm_eps: 1e-5
+  initializer_range: 0.02
+  embedding_scale: null
+  tie_embeddings: true
+  dropout: 0.0
+
+training:
+  batch_size: 4
+  gradient_accumulation_steps: 1
+  learning_rate: 3.0e-4
+  min_lr: 3.0e-5
+  warmup_steps: 2
+  max_steps: 10
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+  dtype: "bf16"
+  eval_every: 1
+  save_every: 1
+  log_every: 1
+  output_dir: "./artifacts/runs"
+  eval_iters: 2
+  checkpoint_keep_last: 10
+  always_save_checkpoint: true
+  checkpoint_enabled: true
+
+data:
+  dataset: "tinystories_smoke"
+  data_dir: "./data/tinystories_smoke"
+  val_split: 0.0
+  seed: 42
+  source_type: "local_text"
+  source_paths:
+    - "./data/tinystories_smoke/train.txt"
+  text_column: "text"
+  cache_dir: "./artifacts/data/tinystories_smoke"
+  storage_type: "memmap_bin"
+  block_size: 128
+  shuffle_buffer_size: 1000
+  num_workers: 0
+
+tokenizer:
+  type: "byte_bpe"
+  vocab_size: 16384
+  reserved_special_tokens: 256
+  artifact_dir: "./artifacts/tokenizer/main_16k"
+  train_files:
+    - "./data/tinystories_smoke/train.txt"
+  min_frequency: 2
+  add_prefix_space: false
+  split_digits: true
+
+device: "cuda"

@@ -141,7 +141,8 @@ class Trainer:
         # Cache total dataset size for progress reporting.
         try:
             dataset = self._train_loader.dataset
-            self.dataset_total_tokens = len(dataset) * self.config.data.block_size
+            tokens = getattr(dataset, "tokens", None)
+            self.dataset_total_tokens = int(tokens.size) if tokens is not None else len(dataset) + self.config.data.block_size
         except Exception:
             pass
 
@@ -229,7 +230,11 @@ class Trainer:
             self._train_iter = iter(self._train_loader)
             # Discover dataset size even on resume.
             try:
-                self.dataset_total_tokens = len(self._train_loader.dataset) * self.config.data.block_size
+                dataset = self._train_loader.dataset
+                tokens = getattr(dataset, "tokens", None)
+                self.dataset_total_tokens = (
+                    int(tokens.size) if tokens is not None else len(dataset) + self.config.data.block_size
+                )
             except Exception:
                 pass
             checkpoint_name = Path(resume).name

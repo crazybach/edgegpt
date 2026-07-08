@@ -53,9 +53,9 @@ def restore_rng_state(state: dict[str, Any] | None) -> None:
     if "numpy" in state:
         np.random.set_state(state["numpy"])
     if "torch" in state:
-        torch.set_rng_state(state["torch"])
+        torch.set_rng_state(state["torch"].cpu())
     if "cuda" in state and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["cuda"])
+        torch.cuda.set_rng_state_all([rng.cpu() for rng in state["cuda"]])
 
 
 # ── DataLoader state ────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ def restore_dataloader_state(train_loader: Any, state: dict[str, Any]) -> None:
         return
     generator = getattr(sampler, "generator", None)
     if generator is not None and "sampler_generator" in state:
-        generator.set_state(state["sampler_generator"])
+        generator.set_state(state["sampler_generator"].cpu())
 
 
 # ── Checkpoint payload ──────────────────────────────────────────────────
