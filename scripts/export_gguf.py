@@ -158,11 +158,31 @@ def _write_tokenizer_metadata(
         tk_data = json.load(f)
 
     model_data = tk_data.get("model", {})
-    vocab: dict[str, int] = model_data.get("vocab", {})
-    merges: list[str] = model_data.get("merges", [])
+    vocab: dict[str, int] = dict(model_data.get("vocab", {}))
+    merges_raw = model_data.get("merges", [])
+
+    # Include added_tokens in the vocab — they sit above the BPE range
+    # and are stored separately in tokenizer.json.
+    for at in tk_data.get("added_tokens", []):
+        tid = at.get("id", -1)
+        token_str = at.get("content", "")
+        if tid >= 0 and token_str:
+            vocab[token_str] = tid
+
+    # Normalise merges to GGUF format: space-joined string pairs.
+    # EdgeGPT stores them as ``["token_a", "token_b"]`` lists.
+    merges: list[str] = []
+    for m in merges_raw:
+        if isinstance(m, list):
+            merges.append(" ".join(m))
+        elif isinstance(m, str):
+            merges.append(m)
+        else:
+            continue
 
     # Build ordered token list (index → token string).
-    vocab_size = len(vocab)
+    # vocab now includes both BPE tokens and added_tokens.
+    vocab_size = max(vocab.values()) + 1 if vocab else 0
     id_to_token: list[str] = [""] * vocab_size
     for token, tid in vocab.items():
         if 0 <= tid < vocab_size:
@@ -235,14 +255,27 @@ def _write_tokenizer_metadata(
             if tid is not None:
                 special_ids[token_str] = tid
 
-    # Mark special tokens as type 3 (user_defined).
-    for tid in special_ids.values():
-        if 0 <= tid < vocab_size:
+    # Mark only core special tokens as type 3 (control).
+    # All tokens including reserved placeholders must stay type 1
+    # (normal) so that tokenizer.ggml.tokens includes every vocab
+    # entry.  If tokens are marked type 3, gguf-py filters them out
+    # of the token list, which makes n_vocab != embedding_rows.
+    _core_special = {
+        special.get("bos_token", ""),
+        special.get("eos_token", ""),
+        special.get("unk_token", ""),
+        special.get("pad_token", ""),
+    }
+    _core_special.discard("")
+
+    for token_str, tid in special_ids.items():
+        if 0 <= tid < vocab_size and token_str in _core_special:
             token_types[tid] = 3
 
     for at in tk_data.get("added_tokens", []):
         tid = at.get("id", -1)
-        if at.get("special") and 0 <= tid < vocab_size:
+        token_str = at.get("content", "")
+        if at.get("special") and 0 <= tid < vocab_size and token_str in _core_special:
             token_types[tid] = 3
 
     # 3. Read add_bos_token from tokenizer_config.json when available.
@@ -255,7 +288,9 @@ def _write_tokenizer_metadata(
 
     # 4. Write tokenizer metadata via gguf-py's typed helpers.
     writer.add_tokenizer_model("gpt2")
-    writer.add_tokenizer_pre("bytelevel")
+    # Tokenizer pre-tokenizer is auto-detected by llama.cpp for BPE models
+    # (based on vocab + merges).  Do not set an explicit value — the
+    # GPT-2 BPE pre-tokenizer fingerprint is the correct default.
     writer.add_token_list(id_to_token)
     writer.add_token_scores(scores)
     writer.add_token_types(token_types)
