@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from configs.config import Config
+from model.cache import LayerKVCache
 from model.rope import RotaryEmbedding
 
 
@@ -45,12 +46,7 @@ def _prepare_attention_mask(
     key_len: int,
     device: torch.device,
 ) -> torch.Tensor | None:
-    """Convert a token mask to an attention-compatible boolean mask.
-
-    The tokenizer/data pipeline uses `1` for real tokens and `0` for padding.
-    PyTorch SDPA boolean masks use `True` for positions that may participate in
-    attention, so this helper keeps that convention explicit.
-    """
+    """Convert a token mask to an attention-compatible boolean mask."""
 
     if attention_mask is None:
         return None
@@ -71,6 +67,7 @@ def manual_scaled_dot_product_attention(
     is_causal: bool = True,
     attention_mask: torch.Tensor | None = None,
     dropout_p: float = 0.0,
+    cache_position: int = 0,
 ) -> torch.Tensor:
     """Readable scaled dot-product attention used as a test oracle.
 
@@ -80,6 +77,7 @@ def manual_scaled_dot_product_attention(
         v: `[B, H_kv, T_k, D]`
         attention_mask: optional token mask `[B, T_k]`, where 1 means visible.
         dropout_p: probability for attention-weight dropout during training.
+        cache_position: absolute position of q[:, :, 0] in cached decoding.
     """
 
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
@@ -99,7 +97,13 @@ def manual_scaled_dot_product_attention(
 
     if is_causal:
         query_len, key_len = q.shape[-2], k.shape[-2]
-        causal_mask = torch.ones(query_len, key_len, device=q.device, dtype=torch.bool).tril()
+        query_positions = torch.arange(
+            int(cache_position),
+            int(cache_position) + query_len,
+            device=q.device,
+        )
+        key_positions = torch.arange(key_len, device=q.device)
+        causal_mask = key_positions[None, :] <= query_positions[:, None]
         scores = scores.masked_fill(~causal_mask, torch.finfo(scores.dtype).min)
 
     prepared_mask = _prepare_attention_mask(
@@ -143,8 +147,6 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = self.d_model // self.n_heads
         self.n_rep = self.n_heads // self.n_kv_heads
 
-        # Llama-family attention projections are bias-free. K/V project to fewer
-        # heads than Q for GQA, reducing future KV-cache memory.
         self.q_proj = nn.Linear(self.d_model, self.n_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(self.d_model, self.n_kv_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(self.d_model, self.n_kv_heads * self.head_dim, bias=False)
@@ -180,6 +182,8 @@ class CausalSelfAttention(nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
         attention_mask: torch.Tensor | None,
+        *,
+        cache_position: int = 0,
     ) -> torch.Tensor:
         """Run PyTorch SDPA, falling back if the local version lacks GQA support."""
 
@@ -192,7 +196,7 @@ class CausalSelfAttention(nn.Module):
         )
         dropout_p = self.dropout if self.training else 0.0
 
-        if prepared_mask is None:
+        if prepared_mask is None and int(cache_position) == 0:
             try:
                 return F.scaled_dot_product_attention(
                     q,
@@ -207,10 +211,14 @@ class CausalSelfAttention(nn.Module):
                 v = repeat_kv(v, self.n_rep)
                 return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True)
 
-        # PyTorch disallows `attn_mask` together with `is_causal` in some
-        # versions, so masked batches use the explicit oracle path for now.
         return manual_scaled_dot_product_attention(
-            q, k, v, is_causal=True, attention_mask=attention_mask, dropout_p=dropout_p
+            q,
+            k,
+            v,
+            is_causal=True,
+            attention_mask=attention_mask,
+            dropout_p=dropout_p,
+            cache_position=cache_position,
         )
 
     def forward(
@@ -219,20 +227,28 @@ class CausalSelfAttention(nn.Module):
         *,
         attention_mask: torch.Tensor | None = None,
         position_offset: int = 0,
+        kv_cache: LayerKVCache | None = None,
+        cache_position: int = 0,
         use_manual_attention: bool = False,
     ) -> torch.Tensor:
         """Apply causal self-attention to hidden states `[B, T, d_model]`."""
 
         q, k, v = self.project_qkv(hidden, position_offset=position_offset)
+        if kv_cache is not None:
+            k, v = kv_cache.append(k, v, cache_position=cache_position)
         if use_manual_attention:
             dropout_p = self.dropout if self.training else 0.0
             attn = manual_scaled_dot_product_attention(
-                q, k, v, is_causal=True, attention_mask=attention_mask, dropout_p=dropout_p
+                q,
+                k,
+                v,
+                is_causal=True,
+                attention_mask=attention_mask,
+                dropout_p=dropout_p,
+                cache_position=cache_position,
             )
         else:
-            attn = self._sdpa_attention(q, k, v, attention_mask)
+            attn = self._sdpa_attention(q, k, v, attention_mask, cache_position=cache_position)
 
-        # Merge heads back to `[B, T, n_heads * head_dim]` before the output
-        # projection restores the residual-stream dimension.
         attn = attn.transpose(1, 2).contiguous().view(hidden.shape[0], hidden.shape[1], self.d_model)
         return self.o_proj(attn)

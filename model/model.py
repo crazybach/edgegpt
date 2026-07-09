@@ -32,6 +32,7 @@ import torch.nn.functional as F
 from configs.config import Config
 from model.attention import CausalSelfAttention
 from model.block import TransformerBlock
+from model.cache import KVCache
 from model.embeddings import OutputProjection, TokenEmbedding
 from model.norm import RMSNorm
 
@@ -82,6 +83,8 @@ class EdgeGPT(nn.Module):
         *,
         attention_mask: torch.Tensor | None = None,
         position_offset: int = 0,
+        kv_cache: KVCache | None = None,
+        cache_position: int = 0,
         use_manual_attention: bool = False,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """Run the full model forward pass.
@@ -107,11 +110,15 @@ class EdgeGPT(nn.Module):
         hidden = self.embed_tokens(input_ids)
 
         # 2. Transformer blocks  [B, T, d_model] → [B, T, d_model]
-        for block in self.layers:
+        if kv_cache is not None and len(kv_cache) != len(self.layers):
+            raise ValueError(f"kv_cache has {len(kv_cache)} layers, expected {len(self.layers)}.")
+        for layer_idx, block in enumerate(self.layers):
             hidden = block(
                 hidden,
                 attention_mask=attention_mask,
                 position_offset=position_offset,
+                layer_cache=kv_cache[layer_idx] if kv_cache is not None else None,
+                cache_position=cache_position,
                 use_manual_attention=use_manual_attention,
             )
 
