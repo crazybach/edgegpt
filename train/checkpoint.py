@@ -72,6 +72,9 @@ def capture_dataloader_state(train_loader: Any) -> dict[str, Any]:
     sampler = getattr(train_loader, "sampler", None)
     if sampler is None:
         return {}
+    state_dict = getattr(sampler, "state_dict", None)
+    if callable(state_dict):
+        return {"sampler_state": state_dict()}
     generator = getattr(sampler, "generator", None)
     if generator is not None:
         return {"sampler_generator": generator.get_state()}
@@ -85,6 +88,10 @@ def restore_dataloader_state(train_loader: Any, state: dict[str, Any]) -> None:
         return
     sampler = getattr(train_loader, "sampler", None)
     if sampler is None:
+        return
+    load_state_dict = getattr(sampler, "load_state_dict", None)
+    if callable(load_state_dict) and "sampler_state" in state:
+        load_state_dict(state["sampler_state"])
         return
     generator = getattr(sampler, "generator", None)
     if generator is not None and "sampler_generator" in state:

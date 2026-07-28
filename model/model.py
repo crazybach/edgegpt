@@ -28,9 +28,9 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from configs.config import Config
-from model.attention import CausalSelfAttention
 from model.block import TransformerBlock
 from model.cache import KVCache
 from model.embeddings import OutputProjection, TokenEmbedding
@@ -113,14 +113,31 @@ class EdgeGPT(nn.Module):
         if kv_cache is not None and len(kv_cache) != len(self.layers):
             raise ValueError(f"kv_cache has {len(kv_cache)} layers, expected {len(self.layers)}.")
         for layer_idx, block in enumerate(self.layers):
-            hidden = block(
-                hidden,
-                attention_mask=attention_mask,
-                position_offset=position_offset,
-                layer_cache=kv_cache[layer_idx] if kv_cache is not None else None,
-                cache_position=cache_position,
-                use_manual_attention=use_manual_attention,
-            )
+            layer_cache = kv_cache[layer_idx] if kv_cache is not None else None
+            if self.training and self.config.training.gradient_checkpointing and layer_cache is None:
+                def checkpointed_block(
+                    block_input: torch.Tensor,
+                    *,
+                    current_block: TransformerBlock = block,
+                ) -> torch.Tensor:
+                    return current_block(
+                        block_input,
+                        attention_mask=attention_mask,
+                        position_offset=position_offset,
+                        cache_position=cache_position,
+                        use_manual_attention=use_manual_attention,
+                    )
+
+                hidden = checkpoint(checkpointed_block, hidden, use_reentrant=False)
+            else:
+                hidden = block(
+                    hidden,
+                    attention_mask=attention_mask,
+                    position_offset=position_offset,
+                    layer_cache=layer_cache,
+                    cache_position=cache_position,
+                    use_manual_attention=use_manual_attention,
+                )
 
         # 3. Final norm  [B, T, d_model] → [B, T, d_model]
         hidden = self.norm(hidden)

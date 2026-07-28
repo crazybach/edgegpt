@@ -43,6 +43,7 @@ class TrainingConfig:
     grad_clip: float = 1.0
     dtype: str = "bf16"
     chunked_loss: bool = False  # tile CE over seq dim to save memory on CPU
+    gradient_checkpointing: bool = False  # recompute block activations during backward
     eval_every: int = 500
     save_every: int = 2000
     log_every: int = 10
@@ -154,6 +155,8 @@ class Config:
             raise ValueError("training.checkpoint_keep_last must be positive.")
         if self.training.dtype not in {"fp32", "bf16", "fp16"}:
             raise ValueError("training.dtype must be one of: fp32, bf16, fp16.")
+        if self.data.block_size is not None and self.data.block_size > self.model.max_seq_len:
+            raise ValueError("data.block_size cannot exceed model.max_seq_len.")
 
     @property
     def head_dim(self) -> int:

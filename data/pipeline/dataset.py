@@ -11,6 +11,71 @@ from configs.config import Config
 from data.pipeline.base import BatchProvider, TokenBlockDataset
 from data.pipeline.shards import TOKEN_DTYPE, load_metadata, split_path
 
+class BoundedRandomSampler(torch.utils.data.Sampler[int]):
+    """Sample token-block starts without allocating a full dataset permutation.
+
+    PyTorch's RandomSampler uses randperm for shuffle-without-replacement. A
+    billion-position memmap would require roughly 8 GB just for those indices.
+    This sampler draws with replacement in bounded chunks and exposes its
+    buffered state so checkpoints can resume deterministically.
+    """
+
+    def __init__(
+        self,
+        data_source: torch.utils.data.Dataset,
+        *,
+        generator: torch.Generator,
+        chunk_size: int = 10_000,
+    ):
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive.")
+        self.data_source = data_source
+        self.generator = generator
+        self.chunk_size = int(chunk_size)
+        self._remaining = len(data_source)
+        self._buffer = torch.empty(0, dtype=torch.long)
+        self._cursor = 0
+
+    def __len__(self) -> int:
+        return len(self.data_source)
+
+    def __iter__(self):
+        if self._remaining <= 0:
+            self._remaining = len(self.data_source)
+            self._buffer = torch.empty(0, dtype=torch.long)
+            self._cursor = 0
+
+        while self._remaining > 0:
+            if self._cursor >= self._buffer.numel():
+                count = min(self.chunk_size, self._remaining)
+                self._buffer = torch.randint(
+                    high=len(self.data_source),
+                    size=(count,),
+                    generator=self.generator,
+                    dtype=torch.long,
+                )
+                self._cursor = 0
+            index = int(self._buffer[self._cursor].item())
+            self._cursor += 1
+            self._remaining -= 1
+            yield index
+
+    def state_dict(self) -> dict[str, object]:
+        return {
+            "generator": self.generator.get_state(),
+            "remaining": self._remaining,
+            "buffer": self._buffer[self._cursor :].clone(),
+        }
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        generator_state = state.get("generator")
+        if isinstance(generator_state, torch.Tensor):
+            self.generator.set_state(generator_state.cpu())
+        self._remaining = int(state.get("remaining", len(self.data_source)))
+        buffer = state.get("buffer")
+        self._buffer = buffer.cpu().long().clone() if isinstance(buffer, torch.Tensor) else torch.empty(0, dtype=torch.long)
+        self._cursor = 0
+
 
 class MemmapTokenBlockDataset(TokenBlockDataset):
     """Read fixed-length causal-LM examples from a flat token shard."""
@@ -58,10 +123,20 @@ class MemmapBatchProvider(BatchProvider):
         dataset = MemmapTokenBlockDataset(split_path(self.config.data.cache_dir, self.split), block_size)
         generator = torch.Generator()
         generator.manual_seed(self.config.data.seed)
+        loader_generator = torch.Generator()
+        loader_generator.manual_seed(self.config.data.seed + 1)
+        sampler = None
+        if self.split == "train":
+            sampler = BoundedRandomSampler(
+                dataset,
+                generator=generator,
+                chunk_size=self.config.data.shuffle_buffer_size,
+            )
         return torch.utils.data.DataLoader(
             dataset,
             batch_size=self.config.training.batch_size,
-            shuffle=self.split == "train",
+            shuffle=False,
+            sampler=sampler,
             num_workers=self.config.data.num_workers,
-            generator=generator,
+            generator=loader_generator,
         )
