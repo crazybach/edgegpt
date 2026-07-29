@@ -65,6 +65,15 @@ tokenizer:
   add_prefix_space: false    # Llama/GPT-style byte BPE does not inject a leading space
   split_digits: true         # isolate digits before BPE so numbers stay compositional
 
+monitoring:
+  # Add "mlflow" after installing requirements-monitoring.txt.
+  backends: ["jsonl"]
+  mlflow_tracking_uri: "http://127.0.0.1:5001"
+  mlflow_experiment_name: "edgegpt"
+  # Checkpoint reports are always logged; large .pt files are opt-in.
+  mlflow_log_checkpoints: false
+  fail_on_error: false
+
 # Inferred at runtime
 device: "auto"               # cuda > mps > cpu
 

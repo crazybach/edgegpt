@@ -12,7 +12,6 @@ Checkpoint behaviour is controlled by ``training.checkpoint_enabled``:
 
 from __future__ import annotations
 
-import json
 import math
 import signal
 import time
@@ -33,7 +32,7 @@ from train.checkpoint import (
     save_checkpoint,
     write_checkpoint_report,
 )
-from train.logging import JsonlEventLogger
+from train.logging import EventLogger, build_event_logger
 from train.optim import build_adamw_optimizer
 from train.schedule import get_warmup_cosine_lr
 
@@ -59,12 +58,13 @@ class Trainer:
         run_dir: str | Path | None = None,
         run_id: str | None = None,
         model: EdgeGPT | None = None,
+        event_logger: EventLogger | None = None,
     ):
         self.config = config
         self.device = torch.device(config.resolve_device())
         self.run_dir = Path(run_dir) if run_dir is not None else self._default_run_dir(run_id)
         self.run_id = run_id or self.run_dir.name
-        self.logger = JsonlEventLogger(self.run_dir, self.run_id)
+        self.logger = event_logger or build_event_logger(config, self.run_dir, self.run_id)
         self.model = model if model is not None else EdgeGPT(config)
         self.model.to(self.device)
         self.optimizer = build_adamw_optimizer(self.model, config)
@@ -264,6 +264,11 @@ class Trainer:
             while self.global_step < target_steps:
                 if self._interrupted:
                     self._save_checkpoint(kind="interrupt")
+                    self.logger.log(
+                        "run_end",
+                        status="interrupted",
+                        **self._log_common(global_step=self.global_step),
+                    )
                     print(
                         f"\nInterrupted at step {self.global_step}. "
                         f"Checkpoint saved. Resume with: --resume {self.run_dir / 'latest.pt'}"

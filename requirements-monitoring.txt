@@ -1,0 +1,5 @@
+# Optional web-based experiment monitoring.
+# Install after the core environment:
+#   pip install -r requirements-monitoring.txt
+
+mlflow>=3.0,<4

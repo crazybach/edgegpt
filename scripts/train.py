@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from configs.config import load_config
-from train import Trainer
+from configs.config import load_config  # noqa: E402
+from train import Trainer  # noqa: E402
 
 
 def build_run_dir(output_dir: str, run_name: str | None, resume: str | None) -> Path:
@@ -31,9 +31,24 @@ def main() -> None:
     parser.add_argument("--resume", default=None, help="Path to a checkpoint, usually latest.pt.")
     parser.add_argument("--max-steps", type=int, default=None, help="Override final global optimizer step.")
     parser.add_argument("--eval-only", action="store_true", help="Run validation once and exit.")
+    parser.add_argument(
+        "--monitor",
+        action="append",
+        choices=("jsonl", "mlflow"),
+        help="Monitoring backend. Repeat for multiple backends; overrides config when supplied.",
+    )
+    parser.add_argument("--mlflow-tracking-uri", default=None, help="Override the MLflow tracking URI.")
+    parser.add_argument("--mlflow-experiment", default=None, help="Override the MLflow experiment name.")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.monitor:
+        config.monitoring.backends = list(dict.fromkeys(args.monitor))
+    if args.mlflow_tracking_uri:
+        config.monitoring.mlflow_tracking_uri = args.mlflow_tracking_uri
+    if args.mlflow_experiment:
+        config.monitoring.mlflow_experiment_name = args.mlflow_experiment
+    config.validate()
     run_dir = build_run_dir(config.training.output_dir, args.run_name, args.resume)
     trainer = Trainer(config, run_dir=run_dir, run_id=run_dir.name)
     print(f"run_dir={trainer.run_dir}")

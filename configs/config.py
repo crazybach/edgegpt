@@ -92,6 +92,17 @@ class TokenizerConfig:
 
 
 @dataclass
+class MonitoringConfig:
+    """Optional training-event destinations."""
+
+    backends: list[str] = field(default_factory=lambda: ["jsonl"])
+    mlflow_tracking_uri: str = "http://127.0.0.1:5001"
+    mlflow_experiment_name: str = "edgegpt"
+    mlflow_log_checkpoints: bool = False
+    fail_on_error: bool = False
+
+
+@dataclass
 class Config:
     """Top-level configuration aggregating all sub-configs."""
 
@@ -99,6 +110,7 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     data: DataConfig = field(default_factory=DataConfig)
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     device: str = "auto"
 
     def __post_init__(self) -> None:
@@ -157,6 +169,14 @@ class Config:
             raise ValueError("training.dtype must be one of: fp32, bf16, fp16.")
         if self.data.block_size is not None and self.data.block_size > self.model.max_seq_len:
             raise ValueError("data.block_size cannot exceed model.max_seq_len.")
+        supported_backends = {"jsonl", "mlflow"}
+        unknown_backends = set(self.monitoring.backends) - supported_backends
+        if unknown_backends:
+            raise ValueError(f"Unsupported monitoring backends: {sorted(unknown_backends)}.")
+        if len(set(self.monitoring.backends)) != len(self.monitoring.backends):
+            raise ValueError("monitoring.backends must not contain duplicates.")
+        if "mlflow" in self.monitoring.backends and not self.monitoring.mlflow_experiment_name:
+            raise ValueError("monitoring.mlflow_experiment_name must not be empty.")
 
     @property
     def head_dim(self) -> int:
@@ -184,6 +204,10 @@ class Config:
         if "tokenizer" in raw:
             cfg.tokenizer = TokenizerConfig(
                 **{k: v for k, v in raw["tokenizer"].items() if k in TokenizerConfig.__dataclass_fields__}
+            )
+        if "monitoring" in raw:
+            cfg.monitoring = MonitoringConfig(
+                **{k: v for k, v in raw["monitoring"].items() if k in MonitoringConfig.__dataclass_fields__}
             )
         if "device" in raw:
             cfg.device = raw["device"]
