@@ -145,6 +145,22 @@ def test_is_norm_tensor():
     assert _is_norm_tensor("blk.0.attn_q.weight", n_layers=2) is False
 
 
+def test_permute_rope_weight_interleaves_split_half_rows():
+    from scripts.export_gguf import _permute_rope_weight
+
+    weight = np.arange(8 * 3, dtype=np.float32).reshape(8, 3)
+    permuted = _permute_rope_weight(weight, n_heads=2)
+
+    assert np.array_equal(permuted, weight[[0, 2, 1, 3, 4, 6, 5, 7]])
+
+
+def test_permute_rope_weight_rejects_invalid_head_shape():
+    from scripts.export_gguf import _permute_rope_weight
+
+    with pytest.raises(ValueError, match="not divisible"):
+        _permute_rope_weight(np.zeros((7, 3), dtype=np.float32), n_heads=2)
+
+
 def test_norm_weights_stay_fp32_in_f16_export(tmp_path: Path):
     """When outtype=f16, norm weights must remain FP32 per GGUF convention."""
     from scripts.export_gguf import export_gguf
@@ -322,7 +338,6 @@ def test_export_includes_architecture_metadata(tmp_path: Path):
         "llama.rope.freq_base",
         "llama.rope.dimension_count",
         "tokenizer.ggml.model",
-        "tokenizer.ggml.pre",
         "tokenizer.ggml.tokens",
         "tokenizer.ggml.scores",
         "tokenizer.ggml.token_type",
@@ -333,10 +348,9 @@ def test_export_includes_architecture_metadata(tmp_path: Path):
     missing = required - field_keys
     assert not missing, f"Missing GGUF metadata fields: {missing}"
 
-    # Tokenizer pre-tokenizer must be "bytelevel" (Fix 4).
-    # Read back via string field.
-    pre_field = reader.fields.get("tokenizer.ggml.pre")
-    assert pre_field is not None, "tokenizer.ggml.pre missing"
+    # The pre-tokenizer is deliberately omitted so llama.cpp can detect the
+    # BPE behavior from the embedded vocabulary and merges.
+    assert "tokenizer.ggml.pre" not in field_keys
 
 
 def test_token_scores_are_non_zero(tmp_path: Path):

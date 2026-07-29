@@ -54,7 +54,13 @@ class JsonlDocumentSource(DocumentSource):
                 for line_number, line in enumerate(handle, start=1):
                     if not line.strip():
                         continue
-                    row = json.loads(line)
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        preview = line[:80].encode("unicode_escape").decode("ascii")
+                        raise ValueError(
+                            f"{path}:{line_number} contains invalid JSON: {preview!r}"
+                        ) from exc
                     text = row.get(self.text_column)
                     if not isinstance(text, str):
                         raise ValueError(f"{path}:{line_number} is missing text column {self.text_column!r}.")
@@ -74,4 +80,3 @@ def build_document_source(config: DataConfig) -> DocumentSource:
     if config.source_type == "jsonl":
         return JsonlDocumentSource(paths, config.text_column)
     raise ValueError(f"Unsupported data.source_type: {config.source_type}")
-

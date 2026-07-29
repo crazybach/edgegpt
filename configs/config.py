@@ -176,14 +176,14 @@ class Config:
 
         cfg = cls()
         if "model" in raw:
-            cfg.model = ModelConfig(**{k: v for k, v in raw["model"].items() if hasattr(ModelConfig, k)})
+            cfg.model = ModelConfig(**{k: v for k, v in raw["model"].items() if k in ModelConfig.__dataclass_fields__})
         if "training" in raw:
-            cfg.training = TrainingConfig(**{k: v for k, v in raw["training"].items() if hasattr(TrainingConfig, k)})
+            cfg.training = TrainingConfig(**{k: v for k, v in raw["training"].items() if k in TrainingConfig.__dataclass_fields__})
         if "data" in raw:
-            cfg.data = DataConfig(**{k: v for k, v in raw["data"].items() if hasattr(DataConfig, k)})
+            cfg.data = DataConfig(**{k: v for k, v in raw["data"].items() if k in DataConfig.__dataclass_fields__})
         if "tokenizer" in raw:
             cfg.tokenizer = TokenizerConfig(
-                **{k: v for k, v in raw["tokenizer"].items() if hasattr(TokenizerConfig, k)}
+                **{k: v for k, v in raw["tokenizer"].items() if k in TokenizerConfig.__dataclass_fields__}
             )
         if "device" in raw:
             cfg.device = raw["device"]
@@ -208,5 +208,3 @@ def load_config(path: str | Path = "configs/default.yaml") -> Config:
     if os.path.exists(path):
         return Config.from_yaml(path)
     return Config()
-
-

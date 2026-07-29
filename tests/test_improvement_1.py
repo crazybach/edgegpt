@@ -40,6 +40,8 @@ def test_improvement_1_config_is_2k_and_8gb_safe_profile():
 
     assert config.model.max_seq_len == 2048
     assert config.data.block_size == 2048
+    assert config.data.source_paths == ["./data/improvement_1/train.jsonl"]
+    assert config.tokenizer.train_files == ["./data/improvement_1/tokenizer_train.txt"]
     assert config.training.batch_size == 1
     assert config.training.gradient_accumulation_steps == 8
     assert config.training.chunked_loss is True

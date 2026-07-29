@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gguf import GGUFWriter  # type: ignore[import-untyped]
+from gguf import GGUFWriter  # type: ignore[import-untyped]  # noqa: E402
 
 
 # ── tensor name mapping ────────────────────────────────────────────────
@@ -110,6 +110,23 @@ def _is_norm_tensor(gguf_name: str, n_layers: int) -> bool:
     return False
 
 
+def _permute_rope_weight(weight: np.ndarray, n_heads: int) -> np.ndarray:
+    """Convert HF split-half RoPE projection rows to llama.cpp layout."""
+    if weight.ndim != 2:
+        raise ValueError(f"RoPE projection weight must be 2D, got shape {weight.shape}.")
+    if n_heads <= 0 or weight.shape[0] % n_heads != 0:
+        raise ValueError(f"RoPE projection rows {weight.shape[0]} are not divisible by {n_heads} heads.")
+
+    head_dim = weight.shape[0] // n_heads
+    if head_dim % 2 != 0:
+        raise ValueError(f"RoPE head dimension must be even, got {head_dim}.")
+
+    return (
+        weight.reshape(n_heads, 2, head_dim // 2, weight.shape[1])
+        .swapaxes(1, 2)
+        .reshape(weight.shape)
+    )
+
 # ── metadata writers ───────────────────────────────────────────────────
 
 
@@ -123,8 +140,6 @@ def _write_llama_metadata(writer: GGUFWriter, config: dict[str, Any]) -> None:
 
     d_model = int(_m("d_model", 512))
     n_heads = int(_m("n_heads", 8))
-
-    writer.add_architecture()  # sets general.architecture = "llama"
     writer.add_context_length(int(_m("max_seq_len", 2048)))
     writer.add_block_count(int(_m("n_layers", 8)))
     writer.add_embedding_length(d_model)
@@ -332,6 +347,7 @@ def export_gguf(
     """
     ckpt_path = Path(checkpoint_path)
     out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 1. Load checkpoint.
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -365,10 +381,14 @@ def export_gguf(
 
     # 5. Map and write tensors.
     tie = True
+    n_heads = 0
+    n_kv_heads = 0
     if isinstance(config, dict):
         model_cfg = config.get("model", config)
         if isinstance(model_cfg, dict):
             tie = model_cfg.get("tie_embeddings", True)
+            n_heads = int(model_cfg.get("n_heads", 0))
+            n_kv_heads = int(model_cfg.get("n_kv_heads", 0))
 
     mapped_count = 0
     try:
@@ -380,6 +400,10 @@ def export_gguf(
                 continue
 
             arr = param.detach().cpu().numpy()
+            if gguf_name.endswith(".attn_q.weight"):
+                arr = _permute_rope_weight(arr, n_heads)
+            elif gguf_name.endswith(".attn_k.weight"):
+                arr = _permute_rope_weight(arr, n_kv_heads)
             # FP16 conversion: skip norm-gain tensors so they stay at
             # full precision, matching the GGUF "mostly f16" convention.
             if (

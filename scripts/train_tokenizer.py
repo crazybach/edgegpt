@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from configs.config import load_config
-from data.tokenizer.io import METRICS_JSON, write_json
-from data.tokenizer.metrics import compute_tokenizer_metrics
-from data.tokenizer.registry import build_tokenizer
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from configs.config import load_config  # noqa: E402
+from data.tokenizer.io import METRICS_JSON, write_json  # noqa: E402
+from data.tokenizer.metrics import compute_tokenizer_metrics  # noqa: E402
+from data.tokenizer.registry import build_tokenizer  # noqa: E402
 
 
 def main() -> None:

@@ -25,6 +25,7 @@ checkpoints/
 data/raw/
 data/processed/
 data/tinystories/
+data/improvement_1/
 
 # Build artifacts
 artifacts/
